@@ -4,7 +4,7 @@ import tempfile
 import threading
 import unittest
 from mobile_python import MobileServer
-from mobile_demo import Demo
+from mobile_demo import Demo, telemetry
 from core import Conflict, Unavailable
 from sessions import SessionStore
 
@@ -59,7 +59,7 @@ class BrowserPreviewTest(unittest.TestCase):
         demo.preview(data)
         first = demo.preview(dict(data, request_id='one', symbols=['Su']))
         self.assertEqual(first['ordinal'], 1)
-        self.assertEqual(first['telemetry']['hes'], 68)
+        self.assertEqual(first['telemetry']['hes'], round(sum(first['telemetry']['days'])/7))
         with self.assertRaises(Conflict):
             demo.commit('ignored')
         self.assertEqual(first, demo.commit('one'))
@@ -70,3 +70,14 @@ class BrowserPreviewTest(unittest.TestCase):
         demo.delete(first['source_id'])
         with self.assertRaises(Unavailable):
             demo.read('two')
+
+    def test_dynamic_radar(self):
+        for index in range(3):
+            readings = [telemetry(index, str(i)) for i in range(40)]
+            for key in ('x', 'y', 'hes', 'delta'):
+                self.assertGreater(len({r[key] for r in readings}), 1)
+            for r in readings:
+                self.assertEqual(len(r['days']), 7)
+                self.assertTrue(all(0 <= v <= 100 for v in [r['x'],r['y'],*r['days']]))
+                self.assertEqual(r['hes'], round(sum(r['days'])/7))
+                self.assertEqual(r['delta'], (r['y']-r['x'])/100)
