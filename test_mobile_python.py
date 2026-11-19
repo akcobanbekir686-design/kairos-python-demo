@@ -4,6 +4,8 @@ import tempfile
 import threading
 import unittest
 from mobile_python import MobileServer
+from mobile_demo import Demo
+from core import Conflict, Unavailable
 from sessions import SessionStore
 
 class MobilePythonTest(unittest.TestCase):
@@ -48,3 +50,23 @@ class MobilePythonTest(unittest.TestCase):
                 finally:
                     server.shutdown()
                     thread.join()
+
+class BrowserPreviewTest(unittest.TestCase):
+    def test_preview_commit_replay_and_erasure(self):
+        demo = Demo()
+        self.addCleanup(demo.directory.cleanup)
+        data = dict(request_id='ignored', text='Ay ışığı.', symbols=['Ay'], event_time_us=1000, scenario=0)
+        demo.preview(data)
+        first = demo.preview(dict(data, request_id='one', symbols=['Su']))
+        self.assertEqual(first['ordinal'], 1)
+        self.assertEqual(first['telemetry']['hes'], 68)
+        with self.assertRaises(Conflict):
+            demo.commit('ignored')
+        self.assertEqual(first, demo.commit('one'))
+        self.assertEqual(first, demo.commit('one'))
+        second = demo.preview(dict(data, request_id='two', symbols=['Su','Kapı'], event_time_us=2000))
+        self.assertEqual(second['T']['ratio'], {'numerator':1, 'denominator':2})
+        self.assertEqual(second, demo.commit('two'))
+        demo.delete(first['source_id'])
+        with self.assertRaises(Unavailable):
+            demo.read('two')
