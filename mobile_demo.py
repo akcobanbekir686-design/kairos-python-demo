@@ -16,19 +16,22 @@ from mobile_python import create_reading, read_pair
 from response_store import ResponseStore
 from sessions import SessionStore, Unauthorized
 
-SCENARIOS = (
-    (42, 68, [54, 62, 66, 71, 73, 77, 73]),
-    (62, 66, [60, 64, 62, 66, 65, 67, 64]),
-    (84, 32, [58, 51, 49, 43, 39, 36, 32]),
-)
-
-
-def telemetry(index):
-    if type(index) is not int or not 0 <= index < len(SCENARIOS):
-        raise ValueError('scenario')
-    x, y, days = SCENARIOS[index]
+def telemetry(index, seed):
+    # The immutable source ID gives one reproducible scenario per axiom.
+    values = hashlib.sha256(seed.encode()).digest()
+    if index == 0:
+        x = 22 + values[0] % 32
+        y = x + 14 + values[1] % 26
+    elif index == 1:
+        x = 36 + values[0] % 39
+        y = x + values[1] % 19 - 9
+    else:
+        x = 71 + values[0] % 23
+        y = x - 35 - values[1] % 29
+    center = (61, 46, 30)[index] + values[2] % 26
+    days = [center + v % 25 - 12 for v in values[3:10]]
     gap = abs(y-x)
-    return dict(mode='simulation', x=x, y=y, days=days, gap=gap,
+    return dict(mode='simulation', scenario=index, x=x, y=y, days=days, gap=gap,
                 hes=round(sum(days)/7), delta=(y-x)/100,
                 state='Optimal çizgi' if gap <= 10 else 'Kırılma hattı' if gap >= 35 else 'Geçiş bölgesi')
 
@@ -38,7 +41,7 @@ def present(store, key, index):
     t = result['T']
     repeated = bool(t['numerator'])
     result.update(
-        telemetry=telemetry(index),
+        telemetry=telemetry(index, result['source_id']),
         dependencyIds=[row['source_id'] for row in
                        json.loads(store._read(store.request_owner, result['snapshot_id']))['memory']['candidates']],
         status='Radar temsili bir senaryoyu gösteriyor. Sembol karşılaştırması bu oturumdaki izlerine dayanıyor.',
@@ -65,7 +68,8 @@ class Demo:
 
     def preview(self, data):
         index = data['scenario']
-        telemetry(index)
+        if type(index) is not int or index not in (0, 1, 2):
+            raise ValueError('scenario')
         rid = data['request_id']
         if not isinstance(rid, str) or not re.fullmatch('[a-zA-Z0-9_-]{1,64}', rid):
             raise ValueError('request_id')
