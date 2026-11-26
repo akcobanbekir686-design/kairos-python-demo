@@ -139,20 +139,25 @@ def payload_for(model,context):
                     'schema':{'type':'object','properties':props,'required':KEYS,'additionalProperties':False}}})
 
 def validate(text,context):
+    # Keep diagnostics content-free. The public API retains its existing error code.
+    def reject(rule):
+        error=ProviderError('invalid_letter',502)
+        error.rule=rule
+        raise error from None
     try:
         v=json.loads(text)
         assert_ok=isinstance(v,dict) and set(v)==set(KEYS)
-        if not assert_ok: raise ValueError()
+        if not assert_ok: reject('response_fields')
         letter=v['letter']
-        if not isinstance(letter,str) or not 1<=len(letter.split())<=650: raise ValueError()
-        if v['observation'] is not None and (not isinstance(v['observation'],str) or not 1<=len(v['observation'].split())<=40): raise ValueError()
+        if not isinstance(letter,str) or not 1<=len(letter.split())<=650: reject('letter_length')
+        if v['observation'] is not None and (not isinstance(v['observation'],str) or not 1<=len(v['observation'].split())<=40): reject('observation')
         if context['ordinal']==21:
-            if not isinstance(v['seal'],str) or not 1<=len(v['seal'].split())<=32: raise ValueError()
-        elif v['seal'] is not None: raise ValueError()
+            if not isinstance(v['seal'],str) or not 1<=len(v['seal'].split())<=32: reject('closing')
+        elif v['seal'] is not None: reject('early_closing')
         for item in (letter,v['observation'],v['seal']):
-            if item and re.search(r'\b(?:HES|PEA|Delta_f|cosine)\b|\b(?:benzerlik|bilinç puanı|tekrar oranı)\s*[:=]?\s*\d|\b[XYT]\s*[:=]\s*[-+]?\d|\d+\s*%|%\s*\d+|\b\d+\s*/\s*\d+\b',item,re.I): raise ValueError()
+            if item and re.search(r'\b(?:HES|PEA|Delta_f|cosine)\b|\b(?:benzerlik|bilinç puanı|tekrar oranı)\s*[:=]?\s*\d|\b[XYT]\s*[:=]\s*[-+]?\d|\d+\s*%|%\s*\d+|\b\d+\s*/\s*\d+\b',item,re.I): reject('telemetry_in_prose')
         allowed={r['id'] for r in context['history']}
-        if not isinstance(v['sources'],list) or not all(isinstance(s,str) and s in allowed for s in v['sources']): raise ValueError()
+        if not isinstance(v['sources'],list) or not all(isinstance(s,str) and s in allowed for s in v['sources']): reject('history_reference')
         # A checkbox alone cannot substantiate an affirmative recollection.
         # Leave uncertain interpretations and explicitly cited prior mentions available.
         mentioned=set(context.get('symbol_sources',{}).get('mentioned',[]))
@@ -162,21 +167,23 @@ def validate(text,context):
         for sentence in re.split(r'[.!?;\n]',letter):
             scene=re.search(r'\b(?:gördün|görmüşsün|görüyordun|görüyorsun)\b',sentence,re.I)
             if scene and not re.search(r'\b(?:etiket|çağrışım|belki|olabilir)',sentence,re.I):
-                if set(literal_mentions(sentence))-mentioned: raise ValueError()
+                if set(literal_mentions(sentence))-mentioned: reject('unsupported_sighting')
         guesses=v['inferences']
-        if not isinstance(guesses,list) or len(guesses)>3: raise ValueError()
+        if not isinstance(guesses,list) or len(guesses)>3: reject('inference_count')
         seen=set()
         for g in guesses:
-            if not isinstance(g,dict) or set(g)!={'symbol','quote'}: raise ValueError()
+            if not isinstance(g,dict) or set(g)!={'symbol','quote'}: reject('inference_fields')
             sym,quote=g['symbol'],g['quote']
-            if not isinstance(sym,str) or not 1<=len(sym)<=40 or not re.fullmatch(r"[^\W\d_]+(?:[ -][^\W\d_]+){0,2}",sym,re.UNICODE): raise ValueError()
+            if not isinstance(sym,str) or not 1<=len(sym)<=40 or not re.fullmatch(r"[^\W\d_]+(?:[ -][^\W\d_]+){0,2}",sym,re.UNICODE): reject('inference_label')
             canonical=sym.translate(str.maketrans({'I':'ı','İ':'i'})).lower()
-            if canonical in seen or not isinstance(quote,str) or not 2<=len(quote.strip())<=120 or quote not in context['current']: raise ValueError()
+            if canonical in seen: reject('duplicate_inference')
+            if not isinstance(quote,str) or not 2<=len(quote.strip())<=120 or quote not in context['current']: reject('inference_quote')
             seen.add(canonical)
             g['symbol']=canonical[:1].translate(str.maketrans({'i':'İ','ı':'I'})).upper()+canonical[1:]
-        if re.search(r'\b(?:rüyanda|anlatında)\s+ben\b',letter,re.I): raise ValueError()
+        if re.search(r'\b(?:rüyanda|anlatında)\s+ben\b',letter,re.I): reject('narrative_person')
         return v
-    except (ValueError,KeyError,TypeError): raise ProviderError('invalid_letter',502) from None
+    except json.JSONDecodeError: reject('invalid_json')
+    except (KeyError,TypeError,ValueError): reject('invalid_value')
 
 # Monetary units are nano-US dollars. Standard short-context only. Reserve the
 # highest documented short cache-write price for every possible input token.
