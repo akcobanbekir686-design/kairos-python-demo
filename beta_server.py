@@ -4,6 +4,7 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlsplit
 from beta_reading import MODEL, OUTPUT, prices
 from beta_store import Ledger
@@ -40,7 +41,16 @@ class Handler(BaseHTTPRequestHandler):
         if path in files:
             f,mime=files[path];return self.send(200,Path(__file__).with_name(f).read_bytes(),mime)
         if path=='/healthz': return self.send(200,{'status':'ok','stage':'closed-beta'})
-        if path=='/status': return self.send(200,{'state':readiness(),'model':os.getenv('OPENAI_MODEL',MODEL)})
+        if path=='/status':
+            with self.server.audit_lock:
+                if not self.server.budget_logged and os.getenv('KAIROS_TEST_DB'):
+                    try:
+                        summary=self.server.ledger.budget_summary(limits())
+                        print('KAIROS_BETA_BUDGET '+json.dumps(summary),flush=True)
+                        self.server.budget_logged=True
+                    except Exception:
+                        return self.send(503,{'state':'storage_unavailable'})
+            return self.send(200,{'state':readiness(),'model':os.getenv('OPENAI_MODEL',MODEL)})
         self.send(404,{})
     def do_POST(self):
         if self.path not in ('/reading','/receipt','/receipts'): return self.send(404,{})
@@ -79,7 +89,7 @@ if __name__=='__main__':
     ledger=Ledger(db_connect)
     # Do not reset missing accounting tables after activation.
     if not limits() and os.getenv('KAIROS_TEST_DB'): ledger.initialize()
-    if os.getenv('KAIROS_TEST_DB'):
-        print('KAIROS_BETA_BUDGET '+json.dumps(ledger.budget_summary(limits())),flush=True)
     with ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','10000'))),Handler) as server:
+        server.audit_lock=Lock()
+        server.budget_logged=False
         server.ledger=ledger;server.serve_forever()
