@@ -4,7 +4,7 @@ import json
 import time
 from contextlib import contextmanager, closing
 from datetime import datetime, timezone
-from beta_reading import MODEL, PERSONA, model_context, payload_for, request_data, reservation, usage_cost, validate
+from beta_reading import PERSONA, history_provenance, model_context, payload_for, request_data, reservation, usage_cost, validate
 from providers import ProviderError
 
 DDL=[
@@ -37,10 +37,30 @@ class Ledger:
         with self.transaction() as sql:
             for statement in DDL: sql(statement)
 
-    def submit(self,owner,body,provider,cap,*,now=None):
+    def receipts(self,owner):
+        with self.transaction() as sql:
+            rows=sql('SELECT id,ordinal FROM beta_letters_v1 WHERE owner=? ORDER BY ordinal DESC',(owner,)).fetchall()
+            return [dict(id=row[0],ordinal=row[1]) for row in rows]
+
+    def receipt(self,owner,rid):
+        with self.transaction() as sql:
+            row=sql('SELECT state FROM beta_meter_v1 WHERE owner=? AND id=?',(owner,rid)).fetchone()
+            if not row: raise ProviderError('unknown_request',404)
+            if row[0]!='done': raise ProviderError('already_submitted' if row[0]=='active' else row[0],409)
+            return json.loads(sql('SELECT body FROM beta_letters_v1 WHERE owner=? AND id=?',(owner,rid)).fetchone()[0])
+
+    def budget_summary(self,cap):
+        with self.transaction() as sql:
+            used,held,calls=sql("""SELECT
+                COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL THEN charge ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN input_tokens IS NULL OR output_tokens IS NULL THEN charge ELSE 0 END),0),
+                COUNT(*) FROM beta_meter_v1""").fetchone()
+        return dict(metered=int(used),reserved=int(held),limit=cap,remaining=cap-int(used)-int(held),calls=calls,
+                    day_per_user=3,month_per_user=21,simultaneous=1)
+
+    def submit(self,owner,body,provider,cap,*,now=None,paused=False):
         data=request_data(body)
         if not 1<=owner<=5: raise ProviderError('beta_only',403)
-        if cap<=0: raise ProviderError('budget_closed',403)
         rid=data['id']
         finger=hashlib.sha256(json.dumps(data,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         stamp=datetime.fromtimestamp(time.time() if now is None else now,timezone.utc).date().isoformat()
@@ -51,6 +71,8 @@ class Ledger:
                 if old[1]=='done':
                     return json.loads(sql('SELECT body FROM beta_letters_v1 WHERE owner=? AND id=?',(owner,rid)).fetchone()[0])
                 raise ProviderError(old[1] if old[1]!='active' else 'already_submitted',409)
+            if paused: raise ProviderError('review_pause',403)
+            if cap<=0: raise ProviderError('budget_closed',403)
             if sql("SELECT COUNT(*) FROM beta_meter_v1 WHERE state='active'").fetchone()[0]: raise ProviderError('busy',429)
             count=lambda query,params:sql(query,params).fetchone()[0]
             if count('SELECT COUNT(*) FROM beta_meter_v1 WHERE owner=? AND day=?',(owner,stamp))>=3 or count('SELECT COUNT(*) FROM beta_meter_v1 WHERE owner=? AND month=?',(owner,stamp[:7]))>=21:
@@ -81,11 +103,20 @@ class Ledger:
                 sql('UPDATE beta_meter_v1 SET state=?,charge=?,input_tokens=?,output_tokens=? WHERE owner=? AND id=?',
                     (err,used[2] if used else hold,used[0] if used else None,used[1] if used else None,owner,rid))
             raise ProviderError(err,getattr(exc,'status',502)) from None
+        provenance=console['provenance']
+        for guess in parsed['inferences']:
+            start=data['text'].index(guess['quote'])
+            provenance['inferred'].append(dict(symbol=guess['symbol'],basis=[start,start+len(guess['quote'])]))
+        if data['history']:
+            previous={g['symbol'] for row in history for g in history_provenance(row)['inferred']}
+            names=[g['symbol'] for g in provenance['inferred']]
+            matched=[s for s in names if s in previous]
+            console['repetition']['inferred']=dict(matched=matched,ratio=[len(matched),len(names)])
         result=dict(console=console,letter=parsed['letter'],observation=parsed['observation'],seal=parsed['seal'],ordinal=ordinal)
         with self.transaction() as sql:
             sql('INSERT INTO beta_letters_v1 VALUES(?,?,?,?)',(owner,rid,ordinal,json.dumps(result,ensure_ascii=False)))
             if data['remember']:
-                sql('INSERT INTO beta_history_v1 VALUES(?,?,?,?,?)',(owner,rid,ordinal,data['text'],json.dumps(data['symbols'])))
+                sql('INSERT INTO beta_history_v1 VALUES(?,?,?,?,?)',(owner,rid,ordinal,data['text'],json.dumps(provenance,ensure_ascii=False)))
             sql("UPDATE beta_meter_v1 SET state='done',charge=?,input_tokens=?,output_tokens=? WHERE owner=? AND id=?",
                 (used[2],used[0],used[1],owner,rid))
         return result
