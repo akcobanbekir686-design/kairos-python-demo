@@ -17,11 +17,11 @@ class BetaTests(unittest.TestCase):
         d=tempfile.TemporaryDirectory();self.addCleanup(d.cleanup)
         path=Path(d.name)/'isolated.sqlite'
         self.db=Ledger(lambda:sqlite3.connect(path),sqlite=True);self.db.initialize()
-        self.ins=[];self.hook=None
+        self.ins=[];self.hook=None;self.guesses=[]
         def transport(payload,key,timeout):
             c=json.loads(payload['input']);self.ins.append(c)
             if self.hook: self.hook()
-            body=dict(letter='Bir eşikte durduğunu yazmışsın. Bu ayrıntıyı kendi hızında düşünebilirsin.',observation=None,
+            body=dict(inferences=self.guesses,letter='Bir eşikte durduğunu yazmışsın. Bu ayrıntıyı kendi hızında düşünebilirsin.',observation=None,
                       seal='Bu küme burada kapanır.' if c['ordinal']==21 else None,sources=[r['id'] for r in c['history']])
             return dict(status='completed',usage=dict(input_tokens=700,output_tokens=122,input_tokens_details={'cache_write_tokens':0}),
                         output=[dict(type='message',role='assistant',status='completed',content=[dict(type='output_text',text=json.dumps(body))])])
@@ -69,7 +69,7 @@ class BetaTests(unittest.TestCase):
             self.assertEqual(sql('SELECT COUNT(*) FROM beta_letters_v1').fetchone()[0],0)
             self.assertEqual(sql('SELECT output_tokens FROM beta_meter_v1 WHERE id=?',(a['id'],)).fetchone()[0],2048)
     def test_schema_and_seal(self):
-        c=dict(ordinal=1,history=[]);v=dict(letter='Sözün burada.',observation=None,seal=None,sources=[])
+        c=dict(ordinal=1,history=[]);v=dict(inferences=[],letter='Sözün burada.',observation=None,seal=None,sources=[])
         for changes in ({'sources':['K1']},{'letter':'X: 45'},{'seal':'Erken mühür.'}):
             with self.assertRaises(ProviderError): validate(json.dumps(v|changes),c)
         self.assertEqual('null',payload_for(MODEL,c)['text']['format']['schema']['properties']['seal']['type'])
@@ -94,6 +94,89 @@ class BetaTests(unittest.TestCase):
         self.assertEqual(last['ordinal'],21);self.assertIsNotNone(last['seal'])
         with self.assertRaisesRegex(ProviderError,'tester_quota'):
             restarted.submit(3,self.data(),self.provider,3_000_000_000,now=1772323200+21*86400)
+
+    def test_teaching_dreams_tags_are_not_events(self):
+        first=self.data('Rüyamda bir sınıfa bir şeyler anlatıp duruyormuşum.',remember=True)
+        first.update(symbols=['Kuş'],experience='rüya')
+        self.runone(first)
+        second=self.data('Rüyamda bir öğrenciye ders anlatıyordum.')
+        second.update(symbols=['Kuş'],experience='rüya')
+        result=self.runone(second)
+        ctx=self.ins[-1]
+        self.assertEqual(ctx['symbol_sources'],{'mentioned':[],'tagged':['Kuş']})
+        self.assertEqual(ctx['history'][0]['symbol_sources']['mentioned'],[])
+        self.assertEqual(ctx['history'][0]['experience'],'rüya')
+        self.assertEqual(result['console']['repetition']['tagged']['matched'],['Kuş'])
+        self.assertEqual(result['console']['repetition']['mentioned']['matched'],[])
+        base=dict(observation=None,seal=None,sources=[],inferences=[])
+        for letter in ('Rüyanda ben ders anlattım.','Rüyanda bir kuş gördün.','Benzerlik: 0,82.'):
+            with self.assertRaises(ProviderError): validate(json.dumps(base|{'letter':letter}),ctx)
+        validate(json.dumps(base|{'letter':'Kuşu iki kez etiket olarak seçmişsin.'}),ctx)
+
+    def test_mention_tag_and_inference_channels(self):
+        first=self.data('Kapının önünde kuru bir yaprak vardı.',remember=True)
+        first.update(symbols=['Kuş'],experience='déjà vu')
+        self.guesses=[dict(symbol='Ağaç',quote='kuru bir yaprak')]
+        old=self.runone(first)
+        p=old['console']['provenance']
+        self.assertEqual(set(p['mentioned']),{'Kapı'})
+        start,end=p['inferred'][0]['basis']
+        self.assertEqual(first['text'][start:end],'kuru bir yaprak')
+        second=self.data('Bir kuşu ve kuru bir yaprağı fark ettim.')
+        second.update(symbols=['Kapı'],experience='eşzamanlılık')
+        self.guesses=[dict(symbol='Ağaç',quote='kuru bir yaprağı')]
+        c=self.runone(second)['console']
+        self.assertEqual(c['sources'],[]) # Tag/mention crossover does not raise similarity.
+        self.assertEqual(c['repetition']['mentioned']['matched'],[])
+        self.assertEqual(c['repetition']['tagged']['matched'],[])
+        self.assertEqual(c['repetition']['inferred']['matched'],['Ağaç'])
+        self.assertEqual(c['provenance']['experience'],'eşzamanlılık')
+        invalid=self.data('Bir yol vardı.')
+        with self.assertRaisesRegex(ProviderError,'invalid_letter'): self.runone(invalid)
+        from beta_reading import literal_mentions
+        self.assertEqual(literal_mentions('Kuşak, evet, ışıklı, ayakkabı ve suç.'),{})
+        self.assertEqual(set(literal_mentions('Görünen kuşların ve ağacın yanında ışığı gördüm.')),{'Kuş','Ağaç','Işık'})
+
+    def test_legacy_receipts_replay_and_no_consent(self):
+        data=self.data('Kapıya yaklaştım.',remember=True)
+        a=self.runone(data)
+        with self.db.transaction() as sql:
+            sql('UPDATE beta_history_v1 SET symbols=? WHERE owner=? AND id=?',(json.dumps(['Kuş']),1,data['id']))
+            sql('UPDATE beta_letters_v1 SET body=? WHERE owner=? AND id=?',(json.dumps({'letter':'Önceki mektup'}),1,data['id']))
+        self.assertEqual(self.db.receipts(2),[])
+        with self.assertRaisesRegex(ProviderError,'unknown_request'): self.db.receipt(2,data['id'])
+        self.assertEqual(self.db.receipts(1),[{'id':data['id'],'ordinal':1}])
+        self.assertEqual(self.db.receipt(1,data['id']),{'letter':'Önceki mektup'})
+        self.assertEqual(self.db.submit(1,data,self.provider,0,paused=True),{'letter':'Önceki mektup'})
+        self.assertEqual(len(self.ins),1)
+        with self.assertRaisesRegex(ProviderError,'review_pause'):
+            self.db.submit(1,self.data(),self.provider,3_000_000_000,paused=True)
+        self.assertEqual(len(self.ins),1)
+        b=self.data('Kapıdan geçtim.');b['symbols']=[]
+        self.runone(b)
+        past=self.ins[-1]['history'][0]
+        self.assertEqual(past['experience'],'belirtilmedi')
+        self.assertEqual(past['symbol_sources'],dict(mentioned=['Kapı'],tagged=['Kuş'],inferred=[]))
+        self.runone(self.data(history=False))
+        self.assertEqual(self.ins[-1]['history'],[])
+        self.assertNotIn('calculated',self.ins[-1])
+        self.assertEqual(len(self.db.receipts(1)),3)
+
+    def test_closed_cap_before_transport_and_zero_spend_replay(self):
+        budget=3_000_000_000
+        data=self.data()
+        self.runone(data)
+        # Build an exhausted ledger in this isolated fixture and count dispatches.
+        with self.db.transaction() as sql:
+            sql('UPDATE beta_meter_v1 SET charge=?',(budget,))
+        snapshot=self.db.budget_summary(budget)
+        self.assertEqual(snapshot['remaining'],0)
+        with self.assertRaisesRegex(ProviderError,'budget_exhausted'):
+            self.runone(self.data(),owner=2,cap=budget)
+        self.assertEqual(snapshot,self.db.budget_summary(budget))
+        self.assertEqual(len(self.ins),1)
+        self.assertEqual(self.runone(data),self.db.receipt(1,data['id']))
+        self.assertEqual(len(self.ins),1)
 
     def test_readiness(self):
         with patch.dict('os.environ',{},clear=True): self.assertEqual(readiness(),'missing_key')
