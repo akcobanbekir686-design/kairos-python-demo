@@ -45,6 +45,8 @@ def _perform_http(host,port,tls,payload,key,timeout):
                            {'Content-Type':'application/json','Authorization':'Bearer '+key})
         response=connection.getresponse()
         if response.status==429: raise ProviderError('provider_rate_limited',503,retry_safe=True)
+        if response.status==401: raise ProviderError('provider_key_rejected', 503)
+        if response.status in (403,404): raise ProviderError('provider_model_unavailable', 503)
         if response.status!=200: raise ProviderError('provider_rejected')
         raw=response.read(1024*1024+1)
         if len(raw)>1024*1024: raise ProviderError('provider_response_too_large')
@@ -114,9 +116,22 @@ class OpenAIResponsesProvider:
                  'input':json.dumps({'ordinal':ordinal,'records':[{'text':r.text} for r in context]},ensure_ascii=False),
                  'max_output_tokens':self.max_output_tokens,'store':False,'stream':False}
         if len(payload['input'].encode())>32768: raise ProviderError('provider_context_too_large',413,retry_safe=True)
+        data=self.request_payload(payload, started)
+        output=self.output_text(data)
+        if time.monotonic()-started>=self.timeout_seconds: raise ProviderError('provider_timeout',504)
+        return output
+
+    def request_payload(self,payload,started=None):
+        if self._transport is None and not self._enable_live: raise ProviderError('live_provider_disabled',503)
+        if payload.get('model')!=self.model or payload.get('max_output_tokens')!=self.max_output_tokens:
+            raise ValueError('provider_configuration_mismatch')
+        started=time.monotonic() if started is None else started
         remaining=self.timeout_seconds-(time.monotonic()-started)
         if remaining<=0: raise ProviderError('provider_timeout',504,retry_safe=True)
-        data=(self._transport or JsonHTTPTransport())(payload,self._api_key,remaining)
+        return (self._transport or JsonHTTPTransport())(payload,self._api_key,remaining)
+
+    @staticmethod
+    def output_text(data):
         if not isinstance(data,dict) or data.get('status')!='completed' or data.get('error') is not None:
             raise ProviderError('provider_incomplete')
         output=data.get('output')
@@ -134,5 +149,4 @@ class OpenAIResponsesProvider:
                 parts.append(content['text'])
         text='\n'.join(parts)
         if not text.strip() or len(text.encode())>65536: raise ProviderError('provider_invalid_response')
-        if time.monotonic()-started>=self.timeout_seconds: raise ProviderError('provider_timeout',504)
         return text
