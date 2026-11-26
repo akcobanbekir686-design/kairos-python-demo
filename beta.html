@@ -4,8 +4,10 @@
 </style><main><header>KAIROS <i>aeon</i> · Kapalı beta</header><h1>Mektup atölyesi</h1>
 <p id="status" role="status">Test servisi kontrol ediliyor…</p>
 <label>Test giriş kodun<input id="pass" type="password" autocomplete="off"></label>
+<p><button class="alt" id="archive">Kayıtlı mektupları aç</button></p><div id="letters"></div>
+<label>Deneyim türü <select id="experience"><option>belirtilmedi</option><option>rüya</option><option>déjà vu</option><option>eşzamanlılık</option><option>an</option></select></label>
 <label>Anlatın<textarea id="narrative" maxlength="3000"></textarea></label>
-<fieldset class="symbols" id="symbols"><legend>Anlatında geçen semboller</legend></fieldset>
+<fieldset class="symbols" id="symbols"><legend>Seçtiğin sembol etiketleri (isteğe bağlı)</legend></fieldset>
 <label><input id="share" type="checkbox"> Bu anlatımı ve seçtiğim sembolleri bu mektup için OpenAI’a göndermeye izin veriyorum.</label>
 <label><input id="history" type="checkbox"> İlgili ve daha önce saklamayı seçtiğim test anlatılarım da bu yorumda kullanılabilir.</label>
 <label><input id="remember" type="checkbox"> Bu anlatımı ve sembollerimi sonraki test mektuplarım için sakla.</label>
