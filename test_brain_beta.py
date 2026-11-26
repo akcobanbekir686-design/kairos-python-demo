@@ -74,6 +74,27 @@ class BetaTests(unittest.TestCase):
             with self.assertRaises(ProviderError): validate(json.dumps(v|changes),c)
         self.assertEqual('null',payload_for(MODEL,c)['text']['format']['schema']['properties']['seal']['type'])
         self.assertEqual('Son.',validate(json.dumps(v|{'seal':'Son.'}),c|{'ordinal':21})['seal'])
+    def test_global_cap_restart_and_month(self):
+        first=self.data();self.runone(first)
+        with self.db.transaction() as sql:
+            cost=sql('SELECT charge FROM beta_meter_v1').fetchone()[0]
+        nextbody=self.data()
+        from beta_reading import reservation,model_context
+        context,_=model_context(2,nextbody,[],1)
+        hold=reservation(payload_for(MODEL,context))
+        restarted=Ledger(self.db.connect,sqlite=True)
+        with self.assertRaisesRegex(ProviderError,'budget_exhausted'):
+            restarted.submit(2,nextbody,self.provider,cost+hold-1)
+        self.assertEqual(len(self.ins),1)
+        restored=restarted.submit(1,first,self.provider,3_000_000_000)
+        self.assertEqual(restored['ordinal'],1)
+        for n in range(20):
+            restarted.submit(3,self.data(),self.provider,3_000_000_000,now=1772323200+n*86400)
+        last=restarted.submit(3,self.data(),self.provider,3_000_000_000,now=1772323200+20*86400)
+        self.assertEqual(last['ordinal'],21);self.assertIsNotNone(last['seal'])
+        with self.assertRaisesRegex(ProviderError,'tester_quota'):
+            restarted.submit(3,self.data(),self.provider,3_000_000_000,now=1772323200+21*86400)
+
     def test_readiness(self):
         with patch.dict('os.environ',{},clear=True): self.assertEqual(readiness(),'missing_key')
         with patch.dict('os.environ',{'OPENAI_API_KEY':'fixture'},clear=True): self.assertEqual(readiness(),'budget_closed')
