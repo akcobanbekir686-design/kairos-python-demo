@@ -20,8 +20,8 @@ const errors={
 for(const s of ['Ay','Su','Kapı','Yol','Ağaç','Işık','Ev','Kuş']){
  const label=document.createElement('label'),field=document.createElement('input');field.type='checkbox';field.value=s;label.append(field,document.createTextNode(s));el('symbols').append(label);
 }
-const last='kairos.brain.last.v1';let ready=false,submitted=false;
-el('recover').hidden=!sessionStorage.getItem(last);
+const last='kairos.brain.last.v1';let ready=false,submitted=!!sessionStorage.getItem(last);
+el('recover').hidden=!submitted;el('new').hidden=!submitted;
 function show(r){
  const c=r.console;
  el('console').textContent=[c.origin,c.ratio?'Tekrarlanan sembol / seçilen sembol: '+c.ratio.join(' / '):'Geçmiş paylaşımı kapalı.',
@@ -51,4 +51,4 @@ async function send(recover){
 el('go').onclick=()=>send(false);el('recover').onclick=()=>send(true);
 el('new').onclick=()=>{submitted=false;sessionStorage.removeItem(last);el('narrative').value='';document.querySelectorAll('input[type=checkbox]').forEach(n=>n.checked=false);
  el('recover').hidden=true;el('new').hidden=true;el('result').hidden=true;el('msg').textContent='';el('go').disabled=!ready;};
-fetch('/status').then(r=>r.json()).then(s=>{ready=s.state==='configured';el('status').textContent=ready?'Test servisi hazır · '+s.model:errors[s.state];el('go').disabled=!ready;}).catch(()=>{el('status').textContent='Test servisine erişilemiyor.'});
+fetch('/status').then(r=>r.json()).then(s=>{ready=s.state==='configured';el('status').textContent=ready?'Test servisi hazır · '+s.model:errors[s.state];el('go').disabled=!ready||submitted;}).catch(()=>{el('status').textContent='Test servisine erişilemiyor.'});
