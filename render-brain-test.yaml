@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: kairos-ana-beyin-test
+    runtime: python
+    region: frankfurt
+    plan: free
+    branch: test/ana-beyin-beta
+    autoDeployTrigger: "off"
+    buildCommand: pip install "psycopg[binary]>=3.2,<4" && python -m unittest test_brain_beta test_mobile_python
+    startCommand: python beta_server.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: OPENAI_MODEL
+        value: gpt-6.2-sol
+      - key: KAIROS_TEST_DB
+        fromDatabase:
+          name: kairos-brain-test-ledger
+          property: connectionString
+      - key: BETA_PASS_1
+        generateValue: true
+      - key: BETA_PASS_2
+        generateValue: true
+      - key: BETA_PASS_3
+        generateValue: true
+      - key: BETA_PASS_4
+        generateValue: true
+      - key: BETA_PASS_5
+        generateValue: true
+databases:
+  - name: kairos-brain-test-ledger
+    region: frankfurt
+    plan: free
+    ipAllowList: []
