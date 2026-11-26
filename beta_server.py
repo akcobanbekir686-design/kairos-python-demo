@@ -1,7 +1,4 @@
 """Separate Render entry point; no production sessions, database, or routes."""
-import hashlib
-import time
-from threading import Thread
 import hmac
 import json
 import os
@@ -29,35 +26,6 @@ def db_connect():
     import psycopg
     return psycopg.connect(os.environ['KAIROS_TEST_DB'],connect_timeout=5)
 
-
-# Temporary, single synthetic closed-beta check. It cannot read another receipt.
-QA_ID = 'eddf2d8e-572c-4611-8f1a-a828d7b81a57'
-QA_OWNER = 5
-QA_SERVICE = 'srv-dc43rjijnfac73behcp0'
-QA_EXPIRES = 1795723781
-
-def verify_tag_once(ledger):
-    if (os.environ.get('RENDER_SERVICE_ID')!=QA_SERVICE or time.time()>QA_EXPIRES
-            or readiness()!='review_pause' or limits()!=3_000_000_000 or os.getenv('OPENAI_MODEL')!=MODEL):
-        return
-    fixture=dict(id=QA_ID,text='Rüyamda kapısı aralık bir sınıfta ders anlatıyormuşum. Tebeşir elimdeymiş. Tahtaya ne yazacağımı hatırlamıyorum.',
-                 symbols=['Kuş'],experience='rüya',share=True,history=False,remember=False)
-    try:
-        model=OpenAIResponsesProvider(model=MODEL,api_key=os.environ['OPENAI_API_KEY'],max_output_tokens=OUTPUT,timeout_seconds=55,enable_live=True)
-        result=ledger.submit(QA_OWNER,fixture,model,limits())
-        receipt=ledger.receipt(QA_OWNER,QA_ID)
-        state='done' if result==receipt else 'receipt_mismatch'
-    except ProviderError as error:
-        state=error.code
-    except Exception:
-        state='check_unavailable'
-    try:
-        with ledger.transaction() as sql:
-            row=sql('SELECT state,input_tokens,output_tokens,charge FROM beta_meter_v1 WHERE owner=? AND id=?',(QA_OWNER,QA_ID)).fetchone()
-        print('KAIROS_TAG_CHECK '+json.dumps(dict(state=state,usage=list(row) if row else None,budget=ledger.budget_summary(limits()))),flush=True)
-    except Exception:
-        print('KAIROS_TAG_CHECK ledger_unavailable',flush=True)
-
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def send(self,status,body,mime='application/json; charset=utf-8'):
@@ -70,14 +38,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         files={'/':('beta.html','text/html; charset=utf-8'),'/beta.js':('beta.js','text/javascript; charset=utf-8')}
         path=urlsplit(self.path).path
-
-        if path=='/qa/tag-receipt':
-            digest=hashlib.sha256(self.headers.get('Authorization','').encode()).hexdigest()
-            if (os.getenv('RENDER_SERVICE_ID')!=QA_SERVICE or time.time()>QA_EXPIRES or not hmac.compare_digest(digest,'ded5b791c22ab6f9f396fb82a4f96ce27de445aa2749f65ca274de9b3b936a69')):
-                return self.send(404,{})
-            try: return self.send(200,self.server.ledger.receipt(QA_OWNER,QA_ID))
-            except ProviderError as e: return self.send(e.status,{'error':e.code})
-            except Exception: return self.send(503,{'error':'storage_unavailable'})
         if path in files:
             f,mime=files[path];return self.send(200,Path(__file__).with_name(f).read_bytes(),mime)
         if path=='/healthz': return self.send(200,{'status':'ok','stage':'closed-beta'})
@@ -132,6 +92,4 @@ if __name__=='__main__':
     with ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','10000'))),Handler) as server:
         server.audit_lock=Lock()
         server.budget_logged=False
-        server.ledger=ledger
-        Thread(target=verify_tag_once,args=(ledger,),daemon=True).start()
-        server.serve_forever()
+        server.ledger=ledger;server.serve_forever()
