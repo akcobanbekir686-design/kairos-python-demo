@@ -99,6 +99,8 @@ class Ledger:
             parsed=validate(provider.output_text(response),ctx)
         except Exception as exc:
             err=exc.code if isinstance(exc,ProviderError) else 'provider_uncertain'
+            if err=='invalid_letter' and hasattr(exc,'rule'):
+                print('KAIROS_LETTER_CHECK '+exc.rule,flush=True)
             with self.transaction() as sql:
                 sql('UPDATE beta_meter_v1 SET state=?,charge=?,input_tokens=?,output_tokens=? WHERE owner=? AND id=?',
                     (err,used[2] if used else hold,used[0] if used else None,used[1] if used else None,owner,rid))
