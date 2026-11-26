@@ -1,0 +1,15 @@
+<!doctype html><html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>KAIROS aeon · Mektup atölyesi</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0c1620;color:#efe9dc;font:17px/1.55 system-ui}main{max-width:620px;margin:auto;padding:26px 20px 50px}header{border-bottom:1px solid #4a4538;padding-bottom:12px;color:#ddbc7f;letter-spacing:.08em}h1,h2{font-family:Georgia,serif;font-weight:400;line-height:1.15}h1{font-size:clamp(2.4rem,9vw,4rem);margin:24px 0}h2{font-size:1.7rem;margin-top:0}.panel,fieldset{border:1px solid #33434b;background:#15232e;border-radius:12px;padding:18px;margin:16px 0}legend{padding:0 8px}label{display:block;margin:12px 0}textarea,input[type=password]{width:100%;background:#0c171f;color:#fff;padding:12px;border:1px solid #57636c;border-radius:6px;font:inherit}textarea{min-height:105px}.symbols label{display:inline-block;margin:4px 10px 4px 0}button{background:#edc786;color:#16212a;border:0;border-radius:6px;padding:11px 16px;font:inherit;margin:4px 5px 4px 0}button:disabled{opacity:.6}.alt{background:#253541;color:#fff}small,footer{color:#9ab8ad}.text{white-space:pre-wrap;overflow-wrap:anywhere}footer{text-align:right;font:12px monospace;margin-top:24px}
+</style><main><header>KAIROS <i>aeon</i> · Kapalı beta</header><h1>Mektup atölyesi</h1>
+<p id="status" role="status">Test servisi kontrol ediliyor…</p>
+<label>Test giriş kodun<input id="pass" type="password" autocomplete="off"></label>
+<label>Anlatın<textarea id="narrative" maxlength="3000"></textarea></label>
+<fieldset class="symbols" id="symbols"><legend>Anlatında geçen semboller</legend></fieldset>
+<label><input id="share" type="checkbox"> Bu anlatımı ve seçtiğim sembolleri bu mektup için OpenAI’a göndermeye izin veriyorum.</label>
+<label><input id="history" type="checkbox"> İlgili ve daha önce saklamayı seçtiğim test anlatılarım da bu yorumda kullanılabilir.</label>
+<label><input id="remember" type="checkbox"> Bu anlatımı ve sembollerimi sonraki test mektuplarım için sakla.</label>
+<small>Üretilen mektup test hesabında tekrar açılabilir.</small><p><button id="go" disabled>Mektubu oluştur</button><button class="alt" id="recover" hidden>Son isteği kontrol et</button></p>
+<p id="msg" role="status"></p><div id="result" hidden><section class="panel"><h2>Uçuş Konsolu</h2><div class="text" id="console"></div></section>
+<section class="panel"><h2>KAIROS Mektubu</h2><div class="text" id="letter"></div></section><section class="panel" id="obsbox"><h2>Gözlem önerisi</h2><div id="observation"></div></section><section class="panel" id="sealbox"><h2>Mühür</h2><div id="seal"></div></section></div><button class="alt" id="new" hidden>Yeni anlatı</button>
+<footer>The Simulation Theory</footer></main><script src="/beta.js" defer></script></html>
