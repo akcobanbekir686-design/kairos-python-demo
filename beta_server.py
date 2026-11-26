@@ -19,7 +19,7 @@ def readiness():
     try: prices(os.getenv('OPENAI_MODEL',MODEL))
     except ProviderError: return 'model_price_unverified'
     if not os.getenv('KAIROS_TEST_DB'): return 'storage_unavailable'
-    return 'configured'
+    return 'configured' if os.getenv('KAIROS_ALLOW_V2_GENERATION')=='1' else 'review_pause'
 
 def db_connect():
     import psycopg
@@ -43,7 +43,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/status': return self.send(200,{'state':readiness(),'model':os.getenv('OPENAI_MODEL',MODEL)})
         self.send(404,{})
     def do_POST(self):
-        if self.path not in ('/reading','/receipt'): return self.send(404,{})
+        if self.path not in ('/reading','/receipt','/receipts'): return self.send(404,{})
         try:
             origin=self.headers.get('Origin','')
             if not origin or origin!='https://'+self.headers.get('Host',''): raise ProviderError('origin',403)
@@ -58,21 +58,18 @@ class Handler(BaseHTTPRequestHandler):
             if owner is None: raise ProviderError('beta_only',403)
             body=json.loads(self.rfile.read(size))
             if not isinstance(body,dict): raise ValueError()
+            if self.path=='/receipts':
+                return self.send(200,{'items':self.server.ledger.receipts(owner)})
             if self.path=='/receipt':
                 rid=body.get('id')
                 if not isinstance(rid,str) or len(rid)!=36: raise ValueError()
-                with self.server.ledger.transaction() as sql:
-                    row=sql('SELECT state FROM beta_meter_v1 WHERE owner=? AND id=?',(owner,rid)).fetchone()
-                    if not row: raise ProviderError('unknown_request',404)
-                    if row[0]!='done': raise ProviderError('already_submitted' if row[0]=='active' else row[0],409)
-                    cached=sql('SELECT body FROM beta_letters_v1 WHERE owner=? AND id=?',(owner,rid)).fetchone()[0]
-                return self.send(200,json.loads(cached))
+                return self.send(200,self.server.ledger.receipt(owner,rid))
             if body.get('share') is not True: raise ProviderError('consent_required',403)
             ready=readiness()
-            if ready!='configured': raise ProviderError(ready,503)
+            if ready not in ('configured','review_pause'): raise ProviderError(ready,503)
             provider=OpenAIResponsesProvider(model=os.getenv('OPENAI_MODEL',MODEL),api_key=os.environ['OPENAI_API_KEY'],
-                                            max_output_tokens=OUTPUT,timeout_seconds=55,enable_live=True)
-            result=self.server.ledger.submit(owner,body,provider,limits())
+                                            max_output_tokens=OUTPUT,timeout_seconds=55,enable_live=ready=='configured')
+            result=self.server.ledger.submit(owner,body,provider,limits(),paused=ready!='configured')
         except ProviderError as e: return self.send(e.status,{'error':e.code})
         except (TypeError,ValueError,AttributeError): return self.send(400,{'error':'invalid_request'})
         except Exception: return self.send(503,{'error':'storage_unavailable'})
@@ -82,5 +79,7 @@ if __name__=='__main__':
     ledger=Ledger(db_connect)
     # Do not reset missing accounting tables after activation.
     if not limits() and os.getenv('KAIROS_TEST_DB'): ledger.initialize()
+    if os.getenv('KAIROS_TEST_DB'):
+        print('KAIROS_BETA_BUDGET '+json.dumps(ledger.budget_summary(limits())),flush=True)
     with ThreadingHTTPServer(('0.0.0.0',int(os.getenv('PORT','10000'))),Handler) as server:
         server.ledger=ledger;server.serve_forever()
