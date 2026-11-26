@@ -178,6 +178,28 @@ class BetaTests(unittest.TestCase):
         self.assertEqual(self.runone(data),self.db.receipt(1,data['id']))
         self.assertEqual(len(self.ins),1)
 
+    def test_rejection_rule_preserves_public_error_and_omits_input(self):
+        ctx={'ordinal':1,'history':[],'current':'Tebeşir elimdeymiş.','symbol_sources':{'mentioned':[]}}
+        base=dict(letter='Sözün burada.',observation=None,seal=None,sources=[],inferences=[])
+        for raw,reason in [('{}','response_fields'),('not json','invalid_json'),
+                           (json.dumps(base|{'sources':['K1']}),'history_reference'),
+                           (json.dumps(base|{'letter':'Bir kuş gördün.'}),'unsupported_sighting'),
+                           (json.dumps(base|{'inferences':[{'symbol':'Eşik','quote':'sahne dışı'}]}),'inference_quote')]:
+            with self.assertRaises(ProviderError) as err: validate(raw,ctx)
+            self.assertEqual((err.exception.code,err.exception.rule),('invalid_letter',reason))
+        self.assertEqual(validate(json.dumps(base),ctx),base)
+        from contextlib import redirect_stdout
+        from io import StringIO
+        self.guesses=[{'symbol':'Eşik','quote':'metinde yok'}]
+        narrative=self.data('Bunu loglara yazma.')
+        captured=StringIO()
+        with redirect_stdout(captured):
+            for _ in range(2):
+                with self.assertRaisesRegex(ProviderError,'invalid_letter'): self.runone(narrative)
+        self.assertEqual(captured.getvalue().splitlines(),['KAIROS_LETTER_CHECK inference_quote'])
+        self.assertEqual(self.db.receipts(1),[])
+        self.assertEqual(len(self.ins),1)
+
     def test_readiness(self):
         with patch.dict('os.environ',{},clear=True): self.assertEqual(readiness(),'missing_key')
         with patch.dict('os.environ',{'OPENAI_API_KEY':'fixture'},clear=True): self.assertEqual(readiness(),'budget_closed')
