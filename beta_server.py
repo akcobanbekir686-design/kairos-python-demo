@@ -2,6 +2,7 @@
 import hmac
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -34,7 +35,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer')
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
-        self.end_headers();self.wfile.write(raw)
+        delivered = True
+        try:
+            self.end_headers()
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            delivered = False
+        finally:
+            if hasattr(self,'request_started'):
+                state = body.get('error','ok') if isinstance(body,dict) else 'ok'
+                elapsed = round((time.monotonic()-self.request_started)*1000)
+                print('KAIROS_HTTP',self.path,status,state,elapsed,'ms',
+                      'sent' if delivered else 'peer_closed',flush=True)
     def do_GET(self):
         files={'/':('beta.html','text/html; charset=utf-8'),'/beta.js':('beta.js','text/javascript; charset=utf-8')}
         path=urlsplit(self.path).path
@@ -54,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404,{})
     def do_POST(self):
         if self.path not in ('/reading','/receipt','/receipts'): return self.send(404,{})
+        self.request_started = time.monotonic()
+        print('KAIROS_HTTP',self.path,'received',flush=True)
         try:
             origin=self.headers.get('Origin','')
             if not origin or origin!='https://'+self.headers.get('Host',''): raise ProviderError('origin',403)
