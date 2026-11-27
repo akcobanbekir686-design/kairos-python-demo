@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
-from beta_reading import MODEL,OUTPUT,payload_for,validate
+from beta_reading import MODEL,OUTPUT,narrative_passages,payload_for,validate
 from beta_server import readiness
 from beta_store import Ledger
 from providers import OpenAIResponsesProvider,ProviderError
@@ -114,17 +114,17 @@ class BetaTests(unittest.TestCase):
         validate(json.dumps(base|{'letter':'Kuşu iki kez etiket olarak seçmişsin.'}),ctx)
 
     def test_mention_tag_and_inference_channels(self):
-        first=self.data('Kapının önünde kuru bir yaprak vardı.',remember=True)
+        first=self.data('Kapının önünde durdum. Kuru bir yaprak vardı.',remember=True)
         first.update(symbols=['Kuş'],experience='déjà vu')
-        self.guesses=[dict(symbol='Ağaç',quote='kuru bir yaprak')]
+        self.guesses=[dict(symbol='Ağaç',passage='D2')]
         old=self.runone(first)
         p=old['console']['provenance']
         self.assertEqual(set(p['mentioned']),{'Kapı'})
         start,end=p['inferred'][0]['basis']
-        self.assertEqual(first['text'][start:end],'kuru bir yaprak')
-        second=self.data('Bir kuşu ve kuru bir yaprağı fark ettim.')
+        self.assertEqual(first['text'][start:end],'Kuru bir yaprak vardı.')
+        second=self.data('Bir kuşu fark ettim. Yerde kuru bir yaprak vardı.')
         second.update(symbols=['Kapı'],experience='eşzamanlılık')
-        self.guesses=[dict(symbol='Ağaç',quote='kuru bir yaprağı')]
+        self.guesses=[dict(symbol='Ağaç',passage='D2')]
         c=self.runone(second)['console']
         self.assertEqual(c['sources'],[]) # Tag/mention crossover does not raise similarity.
         self.assertEqual(c['repetition']['mentioned']['matched'],[])
@@ -184,21 +184,92 @@ class BetaTests(unittest.TestCase):
         for raw,reason in [('{}','response_fields'),('not json','invalid_json'),
                            (json.dumps(base|{'sources':['K1']}),'history_reference'),
                            (json.dumps(base|{'letter':'Bir kuş gördün.'}),'unsupported_sighting'),
-                           (json.dumps(base|{'inferences':[{'symbol':'Eşik','quote':'sahne dışı'}]}),'inference_quote')]:
+                           (json.dumps(base|{'inferences':[{'symbol':'Eşik','quote':'sahne dışı'}]}),'inference_fields'),
+                           (json.dumps(base|{'inferences':[{'symbol':'Eşik','passage':'D9'}]}),'inference_reference')]:
             with self.assertRaises(ProviderError) as err: validate(raw,ctx)
             self.assertEqual((err.exception.code,err.exception.rule),('invalid_letter',reason))
         self.assertEqual(validate(json.dumps(base),ctx),base)
         from contextlib import redirect_stdout
         from io import StringIO
-        self.guesses=[{'symbol':'Eşik','quote':'metinde yok'}]
+        self.guesses=[{'symbol':'Eşik','passage':'D9'}]
         narrative=self.data('Bunu loglara yazma.')
         captured=StringIO()
         with redirect_stdout(captured):
             for _ in range(2):
                 with self.assertRaisesRegex(ProviderError,'invalid_letter'): self.runone(narrative)
-        self.assertEqual(captured.getvalue().splitlines(),['KAIROS_LETTER_CHECK inference_quote'])
+        self.assertEqual(captured.getvalue().splitlines(),['KAIROS_LETTER_CHECK inference_reference'])
         self.assertEqual(self.db.receipts(1),[])
         self.assertEqual(len(self.ins),1)
+
+    def test_structured_parts_use_the_exact_characters_and_only_one_message(self):
+        base=dict(letter='Tebeşir.\nİkinci satır.',observation=None,seal=None,sources=[],inferences=[])
+        raw=json.dumps(base)
+        chunks=lambda s: {'type':'output_text','text':s}
+        def message(parts):
+            return dict(type='message',role='assistant',status='completed',content=parts)
+        ctx=dict(ordinal=2,history=[],current='Tebeşir.')
+        for cut in range(1,len(raw)):
+            response={'status':'completed','output':[{'type':'reasoning'},message([chunks(raw[:cut]),chunks(raw[cut:])])]}
+            self.assertEqual(validate(self.provider.output_text(response,structured=True),ctx),base)
+        for output,code in [([message([chunks(raw)]),message([chunks(raw)])],'provider_invalid_response'),
+                            ([message([chunks(raw),{'type':'refusal'}])],'provider_refused'),
+                            ([message([chunks(raw)]),{'type':'function_call'}],'provider_invalid_response')]:
+            with self.assertRaisesRegex(ProviderError,code):
+                self.provider.output_text({'status':'completed','output':output},structured=True)
+        for bad,rule in [(raw+raw,'invalid_json'),('~~~json\n'+raw+'\n~~~','invalid_json'),
+                         ('{"letter":"ikinci",'+raw[1:],'duplicate_field')]:
+            with self.assertRaises(ProviderError) as err: validate(bad,ctx)
+            self.assertEqual(err.exception.rule,rule)
+
+    def test_schema_limits_and_verbatim_span_for_repeated_passage(self):
+        text='  Tebeşir elimdeymiş.\nTebeşir elimdeymiş.  '
+        ctx=dict(ordinal=2,history=[],current=text)
+        p=payload_for(MODEL,ctx)
+        fields=p['text']['format']['schema']['properties']
+        self.assertEqual(fields['sources']['maxItems'],0)
+        prompts=json.loads(p['input'])['current']
+        self.assertEqual(''.join(row['text'] for row in prompts),text)
+        marked=[row['id'] for row in prompts if row['id']]
+        self.assertEqual(fields['inferences']['items']['properties']['passage']['enum'],marked)
+        self.assertNotIn('Tebeşir',json.dumps(fields,ensure_ascii=False))
+        v=dict(inferences=[dict(symbol='İz',passage=marked[-1])],letter='Sınıftaki ayrıntıyı anlatıyorsun.',
+               observation=None,sources=[],seal=None)
+        a,b=validate(json.dumps(v),ctx)['inferences'][0]['basis']
+        self.assertEqual((a,text[a:b]),(text.rindex('Tebeşir'),'Tebeşir elimdeymiş.'))
+        for fake in ('K1',None,{},'D100'):
+            v['inferences'][0]['passage']=fake
+            with self.assertRaises(ProviderError) as err: validate(json.dumps(v),ctx)
+            self.assertEqual(err.exception.rule,'inference_reference')
+        ctx['history']=[{'id':'K1'},{'id':'K2'}]
+        allowed=payload_for(MODEL,ctx)['text']['format']['schema']['properties']['sources']
+        self.assertEqual(allowed['items']['enum'],['K1','K2'])
+        self.assertEqual(allowed['maxItems'],2)
+
+    def test_narrative_coverage_and_unusable_evidence(self):
+        for text in ('I','🙂','x'*3000,('Çığ. '*700)[:3000],('İçimde bir şey var '*300)[:3000],
+                     '\nBir kapı açıldı.\r\nAğaç.   ','uzun '+'a'*275+' son.'):
+            parts=narrative_passages(text)
+            self.assertEqual(''.join(chunk for _,chunk in parts),text)
+            self.assertLessEqual(len(parts),49)
+            self.assertTrue(all(2<=len(chunk.strip())<=120 for ref,chunk in parts if ref))
+            if text in ('I','🙂','x'*3000):
+                schema=payload_for(MODEL,dict(current=text,history=[],ordinal=1))['text']['format']['schema']
+                self.assertEqual(schema['properties']['inferences']['maxItems'],0)
+
+    def test_replay_fixture_preserves_provenance_without_extra_dispatch(self):
+        story='Rüyamda kapısı aralık bir sınıfta ders anlatıyormuşum. Tebeşir elimdeymiş. Tahtaya ne yazacağımı hatırlamıyorum.'
+        data=self.data(story,history=False)
+        data.update(experience='rüya',symbols=['Kuş'])
+        self.guesses=[{'symbol':'İz','passage':'D2'}]
+        result=self.runone(data)
+        p=result['console']['provenance']
+        self.assertEqual((list(p['mentioned']),p['tagged']),(['Kapı'],['Kuş']))
+        a,b=p['inferred'][0]['basis']
+        self.assertEqual(story[a:b],'Tebeşir elimdeymiş.')
+        self.assertEqual(self.runone(data),self.db.receipt(1,data['id']))
+        self.assertEqual(len(self.ins),1)
+        with self.db.transaction() as sql:
+            self.assertEqual(sql('SELECT COUNT(*) FROM beta_history_v1').fetchone()[0],0)
 
     def test_readiness(self):
         with patch.dict('os.environ',{},clear=True): self.assertEqual(readiness(),'missing_key')
