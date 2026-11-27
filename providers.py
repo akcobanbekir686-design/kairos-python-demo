@@ -131,15 +131,19 @@ class OpenAIResponsesProvider:
         return (self._transport or JsonHTTPTransport())(payload,self._api_key,remaining)
 
     @staticmethod
-    def output_text(data):
+    def output_text(data, *, structured=False):
         if not isinstance(data,dict) or data.get('status')!='completed' or data.get('error') is not None:
             raise ProviderError('provider_incomplete')
         output=data.get('output')
         if not isinstance(output,list): raise ProviderError('provider_invalid_response')
         parts=[]
+        messages=0
         for item in output:
             if not isinstance(item,dict): raise ProviderError('provider_invalid_response')
+            if structured and item.get('type') not in ('message','reasoning'):
+                raise ProviderError('provider_invalid_response')
             if item.get('type')!='message': continue
+            messages+=1
             if item.get('role')!='assistant' or item.get('status')!='completed' or not isinstance(item.get('content'),list):
                 raise ProviderError('provider_invalid_response')
             for content in item['content']:
@@ -147,6 +151,8 @@ class OpenAIResponsesProvider:
                 if content.get('type')=='refusal': raise ProviderError('provider_refused',422)
                 if content.get('type')!='output_text' or not isinstance(content.get('text'),str): raise ProviderError('provider_invalid_response')
                 parts.append(content['text'])
-        text='\n'.join(parts)
+        if structured and messages!=1: raise ProviderError('provider_invalid_response')
+        # Parts of one JSON document can end inside a key, string or escape.
+        text=('' if structured else '\n').join(parts)
         if not text.strip() or len(text.encode())>65536: raise ProviderError('provider_invalid_response')
         return text
