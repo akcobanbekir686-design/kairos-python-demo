@@ -96,7 +96,7 @@ class Ledger:
             response=provider.request_payload(payload)
             used=usage_cost(response,provider.model)
             if used is None or used[2]>hold: raise ProviderError('usage_unconfirmed')
-            parsed=validate(provider.output_text(response),ctx)
+            parsed=validate(provider.output_text(response,structured=True),ctx)
         except Exception as exc:
             err=exc.code if isinstance(exc,ProviderError) else 'provider_uncertain'
             if err=='invalid_letter' and hasattr(exc,'rule'):
@@ -106,9 +106,7 @@ class Ledger:
                     (err,used[2] if used else hold,used[0] if used else None,used[1] if used else None,owner,rid))
             raise ProviderError(err,getattr(exc,'status',502)) from None
         provenance=console['provenance']
-        for guess in parsed['inferences']:
-            start=data['text'].index(guess['quote'])
-            provenance['inferred'].append(dict(symbol=guess['symbol'],basis=[start,start+len(guess['quote'])]))
+        provenance['inferred'].extend(parsed['inferences'])
         if data['history']:
             previous={g['symbol'] for row in history for g in history_provenance(row)['inferred']}
             names=[g['symbol'] for g in provenance['inferred']]
